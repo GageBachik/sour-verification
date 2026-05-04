@@ -1,0 +1,11 @@
+[package]
+name = "sour-cvlr"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+cvlr = "0.4"
+sour-math = { path = "../../../sour/programs/sour-math" }

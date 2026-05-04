@@ -1,0 +1,22 @@
+[package]
+name = "sour-verifier"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sour-math = { path = "../../../sour/programs/sour-math" }
+solana-program-error = "2.2.2"
+
+[features]
+expected-failures = []
+
+[dev-dependencies]
+proptest = "1.6"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[package.metadata.kani.flags]
+default-unwind = "8"

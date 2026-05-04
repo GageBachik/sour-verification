@@ -1,0 +1,271 @@
+use crate::accounting::{self, VaultModel};
+use sour_math::{curve, epsilon, fees, margin};
+
+// ---------------------------------------------------------------------------
+// Invariant 1 — LP-scaled per-user cap bounds single-position worst loss
+//
+// Formula (v0.5.0 LP-scaled cap):
+//   per_user_cap   = lp_nav × risk_budget_bps / max_mm_bps
+//   worst_LP_loss  = notional × mm_bps / 10_000
+//
+// Theorem: notional ≤ per_user_cap  ⟹  worst_LP_loss ≤ lp_nav × risk_budget_bps / 10_000
+//
+// CBMC-decidable proof strategy:
+// ─────────────────────────────
+// CBMC times out on symbolic multiplication above u8 × u8 (bitvector explosion).
+// This is the same class of limitation that blocks `proof_fee_for_notional_never_exceeds_notional_under_100_percent`.
+//
+// Proof split:
+//   Part A (this Kani harness) — numerator bound, u8-only inputs, NO division:
+//     If n * max_mm ≤ nav * rbps  AND  mm ≤ max_mm,
+//     THEN n * mm ≤ nav * rbps.
+//   All inputs are u8; products fit u16. CBMC decides this instantly.
+//
+//   Part B (Lean `single_position_bound`) — full division form over unbounded Nat,
+//   using Nat.div_mul_le_self + Nat.div_le_div_right. General, no bit-width limit.
+//
+// u8 × u8 products fit u16: 255 × 255 = 65025 < 2^16.
+// ---------------------------------------------------------------------------
+#[cfg(kani)]
+#[kani::proof]
+fn proof_per_user_cap_bounds_single_position_loss() {
+    // All symbolic variables are u8 so that u8 * u8 products fit u16.
+    // This covers the ratio structure: mm/max_mm * max_mm/rbps ≤ 1.
+    let nav: u8 = kani::any();     // scaled lp_nav (unit-invariant)
+    let rbps: u8 = kani::any_where(|&b: &u8| b >= 1);   // risk_budget_bps ≥ 1
+    let max_mm: u8 = kani::any_where(|&b: &u8| b >= 1); // max_mm_bps ≥ 1
+    let mm: u8 = kani::any_where(|&b: &u8| b <= max_mm); // mm_bps ≤ max_mm_bps
+    let n: u8 = kani::any();       // scaled notional
+
+    // Widen to u16 to hold products without overflow
+    let nav16    = nav as u16;
+    let rbps16   = rbps as u16;
+    let max_mm16 = max_mm as u16;
+    let mm16     = mm as u16;
+    let n16      = n as u16;
+
+    let nav_rbps = nav16 * rbps16;   // budget numerator
+    let n_max_mm = n16 * max_mm16;   // cap numerator
+
+    // Core assumption: notional satisfies the cap (multiplication form)
+    kani::assume(n_max_mm <= nav_rbps);
+
+    // mm ≤ max_mm ⟹ n * mm ≤ n * max_mm ≤ nav * rbps
+    let n_mm = n16 * mm16;
+    assert!(
+        n_mm <= nav_rbps,
+        "worst_loss numerator (n * mm) <= budget numerator (nav * rbps)"
+    );
+    // Monotone division by 10_000 then gives worst_loss ≤ budget.
+    // Division reasoning is covered by Lean `single_position_bound`.
+}
+
+#[kani::proof]
+fn proof_curve_ratios_are_bounded() {
+    let p_lo: u64 = kani::any();
+    let width: u64 = kani::any();
+    let pi: u64 = kani::any();
+
+    kani::assume(p_lo <= 1_000_000_000_000);
+    kani::assume((1..=1_000_000_000_000).contains(&width));
+    let p_hi = p_lo + width;
+
+    let long = curve::long_fill_ratio(p_lo, p_hi, pi as u128).unwrap();
+    let short = curve::short_fill_ratio(p_lo, p_hi, pi as u128).unwrap();
+
+    assert!((0..=curve::FIXED_ONE).contains(&long));
+    assert!((0..=curve::FIXED_ONE).contains(&short));
+}
+
+#[kani::proof]
+fn proof_fee_for_notional_never_exceeds_notional_under_100_percent() {
+    let notional_small: u32 = kani::any();
+    let fee_micros: u32 = kani::any();
+    let notional = notional_small as u64;
+
+    kani::assume(fee_micros <= 1_000_000);
+
+    let fee = fees::fee_for_notional(notional, fee_micros).unwrap();
+    assert!(fee <= notional);
+}
+
+#[kani::proof]
+fn proof_epsilon_never_exceeds_max() {
+    let override_bps: u32 = kani::any();
+    let dynamic_scale: u32 = kani::any();
+    let allocated_lp_bps: u16 = kani::any();
+    let total_assets: u64 = kani::any();
+    let max_epsilon_bps: u32 = kani::any();
+
+    kani::assume(allocated_lp_bps <= 10_000);
+
+    let eps = epsilon::effective_epsilon_bps(
+        override_bps,
+        dynamic_scale,
+        allocated_lp_bps,
+        total_assets,
+        max_epsilon_bps,
+    )
+    .unwrap();
+    assert!(eps <= max_epsilon_bps);
+}
+
+#[kani::proof]
+fn proof_lp_withdraw_payout_is_bounded_by_available_assets() {
+    let total_assets_small: u8 = kani::any();
+    let total_shares_small: u8 = kani::any();
+    let outstanding_winner_pnl_small: u8 = kani::any();
+    let shares_small: u8 = kani::any();
+
+    let total_assets = total_assets_small as u64;
+    let total_shares = total_shares_small as u64;
+    let outstanding_winner_pnl = outstanding_winner_pnl_small as u64;
+    let shares = shares_small as u64;
+
+    kani::assume(total_shares > 0);
+    kani::assume(outstanding_winner_pnl <= total_assets);
+    kani::assume(shares <= total_shares);
+
+    let vault = VaultModel {
+        total_assets,
+        total_shares,
+        outstanding_winner_pnl,
+        bad_debt_reserve: 0,
+    };
+    let out = accounting::usdc_for_shares(&vault, shares).unwrap();
+    assert!(out <= vault.available_assets());
+}
+
+#[kani::proof]
+fn proof_post_withdraw_health_accepts_empty_position_set() {
+    let post_collateral: u64 = kani::any();
+    let mm_bps: u16 = kani::any();
+
+    assert!(margin::check_post_withdraw_health(post_collateral, &[], mm_bps).is_ok());
+}
+
+#[kani::proof]
+fn proof_sour_curve_lp_loss_counts_half_unit_long_capacity() {
+    let qmax_storage = (curve::FIXED_ONE as u64) / 2;
+    let entry = 100_000_000;
+    let p_lo = 90_000_000;
+    let p_hi = 110_000_000;
+
+    let current =
+        margin::curve_max_lp_loss_per_position_micros(qmax_storage, entry, p_lo, p_hi, false)
+            .unwrap();
+
+    assert_eq!(current, 5_000_000);
+}
+
+#[kani::proof]
+fn proof_sour_curve_lp_loss_counts_half_unit_short_capacity() {
+    let qmax_storage = (curve::FIXED_ONE as u64) / 2;
+    let entry = 100_000_000;
+    let p_lo = 90_000_000;
+    let p_hi = 110_000_000;
+
+    let current =
+        margin::curve_max_lp_loss_per_position_micros(qmax_storage, entry, p_lo, p_hi, true)
+            .unwrap();
+
+    assert_eq!(current, 5_000_000);
+}
+
+#[kani::proof]
+fn proof_sour_curve_lp_loss_matches_exact_fractional_capacity() {
+    let qmax_steps: u8 = kani::any();
+    let adverse: u16 = kani::any();
+    let is_short: bool = kani::any();
+
+    kani::assume(qmax_steps > 0);
+    kani::assume(adverse > 0);
+
+    let qmax_storage = ((curve::FIXED_ONE as u64) / 256) * qmax_steps as u64;
+    let entry = 100_000_000u64;
+    let adverse = adverse as u64;
+    let p_lo = entry - adverse;
+    let p_hi = entry + adverse;
+
+    let current =
+        margin::curve_max_lp_loss_per_position_micros(qmax_storage, entry, p_lo, p_hi, is_short)
+            .unwrap();
+    let precise = crate::exact::curve_max_lp_loss_fractional_micros(
+        qmax_storage,
+        entry,
+        p_lo,
+        p_hi,
+        is_short,
+    )
+    .unwrap();
+
+    assert_eq!(current, precise);
+}
+
+#[kani::proof]
+fn proof_positive_close_pnl_rejects_when_lp_assets_are_insufficient() {
+    let total_assets_small: u32 = kani::any();
+    let extra_pnl_small: u32 = kani::any();
+    let total_assets = total_assets_small as u64;
+    let final_pnl = (total_assets + extra_pnl_small as u64) as i64;
+
+    kani::assume(total_assets > 0);
+    kani::assume(extra_pnl_small > 0);
+
+    let mut vault = VaultModel {
+        total_assets,
+        total_shares: total_assets,
+        outstanding_winner_pnl: 0,
+        bad_debt_reserve: 0,
+    };
+    let before = vault;
+
+    let result = accounting::apply_close_pnl(&mut vault, 0, 0, final_pnl);
+
+    assert!(result.is_err());
+    assert_eq!(vault, before);
+}
+
+#[kani::proof]
+fn proof_positive_close_pnl_debits_lp_exactly_when_fully_backed() {
+    let total_assets_small: u32 = kani::any();
+    let outstanding_winner_pnl_small: u32 = kani::any();
+    let realized_pnl_old_small: u32 = kani::any();
+    let final_pnl_small: u32 = kani::any();
+    let trader_collateral_small: u32 = kani::any();
+
+    let total_assets = total_assets_small as u64;
+    let outstanding_winner_pnl = outstanding_winner_pnl_small as u64;
+    let realized_pnl_old = realized_pnl_old_small as u64;
+    let final_pnl = final_pnl_small as u64;
+    let trader_collateral = trader_collateral_small as u64;
+
+    kani::assume(total_assets > 0);
+    kani::assume(final_pnl > 0);
+    kani::assume(final_pnl <= total_assets);
+    kani::assume(outstanding_winner_pnl <= total_assets);
+    kani::assume(realized_pnl_old <= outstanding_winner_pnl);
+
+    let mut vault = VaultModel {
+        total_assets,
+        total_shares: total_assets,
+        outstanding_winner_pnl,
+        bad_debt_reserve: 0,
+    };
+    let before = vault;
+
+    let trader_after = accounting::apply_close_pnl(
+        &mut vault,
+        trader_collateral,
+        realized_pnl_old as i64,
+        final_pnl as i64,
+    )
+    .unwrap();
+
+    assert_eq!(trader_after - trader_collateral, final_pnl);
+    assert_eq!(before.total_assets - vault.total_assets, final_pnl);
+    assert_eq!(
+        vault.outstanding_winner_pnl,
+        before.outstanding_winner_pnl - realized_pnl_old
+    );
+}

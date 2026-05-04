@@ -1,0 +1,2 @@
+Saving last configuration file to .certora_internal/26_05_03_11_32_56_870821ed30/run.conf
+Copying /Users/loser/projects/sour/target/deploy/sour.so to .certora_internal/26_05_03_11_32_56_870821ed30/.certora_sources/sour/target/deploy/sour.so

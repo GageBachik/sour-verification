@@ -1,0 +1,59 @@
+{
+    "CLI_package_name": "certora-cli",
+    "CLI_version": "8.11.3",
+    "branch": "HEAD",
+    "certora_ci_client": null,
+    "conf": {
+        "compilation_steps_only": true,
+        "files": [
+            "/Users/loser/projects/sour/target/deploy/sour.so"
+        ],
+        "msg": "sour-verification-compile-smoke",
+        "short_output": true
+    },
+    "conf_path": null,
+    "cwd_relative": ".",
+    "default_solc_version": null,
+    "dirty": false,
+    "ecosystem": "SOLANA",
+    "group_id": null,
+    "jar_flag_info": [
+        "-globalTimeout,cloud_global_timeout,string",
+        "-coinbaseFeaturesMode,coinbase_mode,boolean",
+        "-coverageInfo,coverage_info,string",
+        "-enforceRequireReasonInCVL,enforce_require_reason,boolean",
+        "-userGlobalTimeout,global_timeout,string",
+        "-includeEmptyFallback,include_empty_fallback,boolean",
+        "-independentSatisfies,independent_satisfy,boolean",
+        "-b,loop_iter,string",
+        "-multiAssertCheck,multi_assert_check,boolean",
+        "-multipleCEX,multi_example,string",
+        "-noCalltraceStorageInformation,no_calltrace_storage_information,boolean",
+        "-assumeUnwindCond,optimistic_loop,boolean",
+        "-smt_preciseBitwiseOps,precise_bitwise_ops,boolean",
+        "-resourceFiles,prover_resource_files,list",
+        "-rule,rule,list",
+        "-ruleSanityChecks,rule_sanity,string",
+        "-saveVerifierResults,save_verifier_results,boolean",
+        "-ciMode,short_output,boolean",
+        "-t,smt_timeout,string",
+        "-smt_useBV,smt_use_bv,boolean",
+        "-json,tool_output,string",
+        "-unusedSummaryHardFail,unused_summary_hard_fail,string",
+        "-usePerRuleCache,use_per_rule_cache,string"
+    ],
+    "java_version": "25.0.2",
+    "main_spec": null,
+    "origin": "",
+    "python_version": "3.12.4",
+    "raw_args": [
+        "/Users/loser/.pyenv/versions/3.12.4/bin/certoraSolanaProver",
+        "/Users/loser/projects/sour/target/deploy/sour.so",
+        "--compilation_steps_only",
+        "--short_output",
+        "--msg",
+        "sour-verification-compile-smoke"
+    ],
+    "revision": "HEAD",
+    "timestamp": "1777828106.113885"
+}
