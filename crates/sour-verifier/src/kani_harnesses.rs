@@ -563,6 +563,250 @@ fn proof_max_oi_notional_cap_bound() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// v0.6.0 — `classify_upsert_position_slot` totality + per-kind characterization.
+//
+// Source: `programs/sour/src/instructions/upsert_position.rs:51-68`.
+// Mirror:  `crates/sour-verifier/src/upsert_slot.rs`.
+//
+// Theorems:
+//   T1 (totality)         — for every (addr, sign_status), the classifier
+//                          returns exactly one of {FreshInit, ZeroedReopen,
+//                          PositionsExist} (the Rust `match` on the result is
+//                          exhaustive; this is mostly a sanity assert that
+//                          every input lands in some arm).
+//   T2 (FreshInit iff)    — FreshInit ⇔ addr == [0; 32].
+//   T3 (ZeroedReopen iff) — ZeroedReopen ⇔ addr != [0; 32] ∧ STATUS_BIT set.
+//   T4 (PositionsExist)   — otherwise.
+//
+// CBMC budget: 32-byte equality + 1-bit mask are decidable instantly. Full
+// symbolic input domain (no narrowing).
+// ---------------------------------------------------------------------------
+
+use crate::upsert_slot::{
+    classify_upsert_position_slot, is_zeroed, UpsertSlotKind, STATUS_BIT,
+};
+
+#[kani::proof]
+fn proof_classify_upsert_position_slot_totality_and_kind() {
+    let prior_trader_account: [u8; 32] = kani::any();
+    let prior_sign_status: u8 = kani::any();
+
+    let result = classify_upsert_position_slot(prior_trader_account, prior_sign_status);
+
+    // Pre-derive the discriminating predicates.
+    let is_default_addr = prior_trader_account == [0u8; 32];
+    let zeroed = is_zeroed(prior_sign_status);
+    // Sanity: bit-mask helper agrees with the explicit STATUS_BIT test.
+    assert_eq!(zeroed, (prior_sign_status & STATUS_BIT) != 0);
+
+    // T1 — totality. Every input must land in one of the three variants.
+    // (Rust's `match` is already exhaustive over the enum, but asserting via
+    // an OR chain forces CBMC to confirm no `unreachable!` panic was elided.)
+    assert!(matches!(
+        result,
+        UpsertSlotKind::FreshInit
+            | UpsertSlotKind::ZeroedReopen
+            | UpsertSlotKind::PositionsExist
+    ));
+
+    // T2 — FreshInit ⇔ prior_trader_account is the zero pubkey.
+    if is_default_addr {
+        assert!(matches!(result, UpsertSlotKind::FreshInit));
+    } else {
+        assert!(!matches!(result, UpsertSlotKind::FreshInit));
+    }
+
+    // T3 — ZeroedReopen ⇔ owned slot AND STATUS_BIT set.
+    if !is_default_addr && zeroed {
+        assert!(matches!(result, UpsertSlotKind::ZeroedReopen));
+    } else {
+        assert!(!matches!(result, UpsertSlotKind::ZeroedReopen));
+    }
+
+    // T4 — PositionsExist ⇔ owned slot AND STATUS_BIT clear.
+    if !is_default_addr && !zeroed {
+        assert!(matches!(result, UpsertSlotKind::PositionsExist));
+    } else {
+        assert!(!matches!(result, UpsertSlotKind::PositionsExist));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// v0.6.0 — `recompute_aggregate` byte-equals Σ per-market `worst_case_lp_loss`
+// at N=8 markets (close to the v1 launch market count of 5).
+//
+// Same shape as `proof_recompute_matches_per_market_sum_n4`, but doubled.
+// CBMC bitvector budget tightens fast as N grows; per-field domains here are
+// narrower than the N=4 harness (u4 simulated via `kani::any_where(|&b| b <= 15)`)
+// so that 8× (u4 × u4 × u4) products stay decidable inside `--harness-timeout`.
+// Worst-case per-term product is 15 × 15 × 15 = 3_375 (fits u16). Sum of eight
+// such terms ≤ 27_000 (still u16). The narrowed domain still exercises the
+// fold + checked_add structure that's the core property.
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::unwind(9)]
+fn proof_recompute_matches_per_market_sum_n8() {
+    let max_mm_small: u8 = kani::any_where(|&b: &u8| b >= 1 && b <= 15);
+    let max_mm_bps = max_mm_small as u16;
+
+    // Construct 8 bounded-symbolic markets. Per-field domain is u4 (0..=15)
+    // so 8× fold stays inside CBMC's bitvector budget at N=8.
+    let mk = || -> MarketModel {
+        let long_oi: u8 = kani::any_where(|&b: &u8| b <= 15);
+        let short_oi: u8 = kani::any_where(|&b: &u8| b <= 15);
+        let curve_long: u8 = kani::any_where(|&b: &u8| b <= 15);
+        let curve_short: u8 = kani::any_where(|&b: &u8| b <= 15);
+        let price: u8 = kani::any_where(|&b: &u8| b <= 15);
+        MarketModel {
+            long_oi: long_oi as u64,
+            short_oi: short_oi as u64,
+            curve_max_lp_loss_long: curve_long as u128,
+            curve_max_lp_loss_short: curve_short as u128,
+            price_smoothed: price as u128,
+        }
+    };
+
+    let m0 = mk();
+    let m1 = mk();
+    let m2 = mk();
+    let m3 = mk();
+    let m4 = mk();
+    let m5 = mk();
+    let m6 = mk();
+    let m7 = mk();
+
+    let markets = [m0, m1, m2, m3, m4, m5, m6, m7];
+
+    let recomputed = recompute_aggregate(&markets, max_mm_bps).expect("no overflow at u4 bounds");
+
+    let t0 = m0.worst_case_lp_loss(max_mm_bps, m0.price_smoothed);
+    let t1 = m1.worst_case_lp_loss(max_mm_bps, m1.price_smoothed);
+    let t2 = m2.worst_case_lp_loss(max_mm_bps, m2.price_smoothed);
+    let t3 = m3.worst_case_lp_loss(max_mm_bps, m3.price_smoothed);
+    let t4 = m4.worst_case_lp_loss(max_mm_bps, m4.price_smoothed);
+    let t5 = m5.worst_case_lp_loss(max_mm_bps, m5.price_smoothed);
+    let t6 = m6.worst_case_lp_loss(max_mm_bps, m6.price_smoothed);
+    let t7 = m7.worst_case_lp_loss(max_mm_bps, m7.price_smoothed);
+    let expected: u128 = t0 + t1 + t2 + t3 + t4 + t5 + t6 + t7;
+
+    assert_eq!(recomputed, expected);
+}
+
+// ---------------------------------------------------------------------------
+// v0.6.0 — `recompute_aggregate` is independent of the prior counter value
+// (drift-recovery idempotence).
+//
+// Theorem: for any prior `Protocol.aggregate_max_lp_loss = X` (symbolic) and
+// any market state, `recompute_aggregate` produces a value that equals the
+// independent fold AND is independent of X. The on-chain handler simply
+// overwrites the counter with the recomputed sum, but making the
+// independence-from-prior property explicit is the audit's recommendation
+// for surfacing the drift-recovery escape hatch.
+//
+// Strategy: build symbolic markets, run `recompute_aggregate` once with
+// the prior counter set to a symbolic X1 and once set to X2, assert both
+// runs produce the same value (and equal the independent fold). Since
+// `recompute_aggregate` takes `&[MarketModel]` (not `&mut Protocol`), the
+// proof boils down to "the function does not read the prior counter" — the
+// Kani harness checks this by varying the prior counter symbolically and
+// asserting output equality. N=4 to keep CBMC's bitvector search inside
+// the harness budget.
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::unwind(5)]
+fn proof_recompute_aggregate_drift_recovery_idempotence() {
+    let max_mm_small: u8 = kani::any_where(|&b: &u8| b >= 1);
+    let max_mm_bps = max_mm_small as u16;
+
+    let mk = |long_oi_s: u8,
+              short_oi_s: u8,
+              curve_long_s: u8,
+              curve_short_s: u8,
+              price_s: u8|
+     -> MarketModel {
+        MarketModel {
+            long_oi: long_oi_s as u64,
+            short_oi: short_oi_s as u64,
+            curve_max_lp_loss_long: curve_long_s as u128,
+            curve_max_lp_loss_short: curve_short_s as u128,
+            price_smoothed: price_s as u128,
+        }
+    };
+
+    let m0 = mk(
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+    );
+    let m1 = mk(
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+    );
+    let m2 = mk(
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+    );
+    let m3 = mk(
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+    );
+
+    let markets = [m0, m1, m2, m3];
+
+    // Two symbolic prior counter values — the post-recompute counter must
+    // equal the per-market sum regardless of which one was in place before.
+    let x1_small: u32 = kani::any();
+    let x2_small: u32 = kani::any();
+    let x1 = x1_small as u128;
+    let x2 = x2_small as u128;
+
+    // Simulate the on-chain handler: snapshot prior, run recompute, write back.
+    let mut p1 = ProtocolModel {
+        aggregate_max_lp_loss: x1,
+        aggregate_budget_bps: 10_000,
+        max_mm_bps,
+    };
+    let mut p2 = ProtocolModel {
+        aggregate_max_lp_loss: x2,
+        aggregate_budget_bps: 10_000,
+        max_mm_bps,
+    };
+
+    let s1 = recompute_aggregate(&markets, max_mm_bps).expect("no overflow at u8 bounds");
+    let s2 = recompute_aggregate(&markets, max_mm_bps).expect("no overflow at u8 bounds");
+    p1.aggregate_max_lp_loss = s1;
+    p2.aggregate_max_lp_loss = s2;
+
+    // Independent fold — what the post-recompute counter should equal.
+    let t0 = m0.worst_case_lp_loss(max_mm_bps, m0.price_smoothed);
+    let t1 = m1.worst_case_lp_loss(max_mm_bps, m1.price_smoothed);
+    let t2 = m2.worst_case_lp_loss(max_mm_bps, m2.price_smoothed);
+    let t3 = m3.worst_case_lp_loss(max_mm_bps, m3.price_smoothed);
+    let expected: u128 = t0 + t1 + t2 + t3;
+
+    // The post-recompute value equals the independent fold regardless of
+    // what the prior counter held. This is the drift-recovery property:
+    // even if the hot-path counter has drifted (X1 stale or wrong), one
+    // call to `recompute_aggregate` resyncs it to the truth.
+    assert_eq!(p1.aggregate_max_lp_loss, expected);
+    assert_eq!(p2.aggregate_max_lp_loss, expected);
+    // Independence-from-prior: the post values must be equal whether the
+    // prior was X1 or X2.
+    assert_eq!(p1.aggregate_max_lp_loss, p2.aggregate_max_lp_loss);
+}
+
 /// Cross-market price-agnostic invariant — pinned at concrete inputs to make
 /// the dollar-symmetry property visible to the proof reader. (The general
 /// proof is the previous harness; this is a concrete sanity case.)

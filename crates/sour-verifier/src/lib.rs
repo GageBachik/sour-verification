@@ -9,6 +9,7 @@ pub mod accounting;
 pub mod aggregate;
 pub mod exact;
 pub mod max_oi;
+pub mod upsert_slot;
 
 #[cfg(kani)]
 mod kani_harnesses;
