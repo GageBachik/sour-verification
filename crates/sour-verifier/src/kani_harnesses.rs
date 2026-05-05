@@ -295,7 +295,7 @@ fn proof_positive_close_pnl_debits_lp_exactly_when_fully_backed() {
 // 45s harness budget. Bound choices documented per harness.
 // ---------------------------------------------------------------------------
 
-use crate::aggregate::{aggregate_cap, ProtocolModel};
+use crate::aggregate::{aggregate_cap, recompute_aggregate, MarketModel, ProtocolModel};
 
 /// Invariant I — cap holds under a single `update_aggregate(delta)`.
 ///
@@ -358,4 +358,86 @@ fn proof_aggregate_cap_invariant_holds_under_update() {
     // total_assets / budget / max_mm, none of which the helper mutates,
     // so cap_pre == cap_post within a single upsert).
     assert!(protocol.aggregate_max_lp_loss <= cap);
+}
+
+/// Invariant II — `recompute_aggregate` IS the sum of per-market
+/// `worst_case_lp_loss` terms (idempotence + no overflow under bounded inputs).
+///
+/// Models the body of `recompute_aggregate.rs::handler` (modulo the runtime
+/// PDA + program-owner check, which is account-authentication, not math).
+/// N=4 markets — large enough to exercise the fold, small enough that 4×
+/// (u8 × u8 × u8) products stay decidable.
+///
+/// CBMC budget: per-market scalar inputs bounded to u8. Worst-case per-term
+/// product is 255 × 255 × 255 = 16_581_375 (fits u32, well under u128 wrap).
+/// Sum of four such terms ≤ 66_325_500 (still u32). No `saturating_*` arm
+/// of the underlying formula can be reached, so the assertion of equality
+/// against the explicit fold is sound.
+#[kani::proof]
+#[kani::unwind(5)]
+fn proof_recompute_matches_per_market_sum_n4() {
+    let max_mm_small: u8 = kani::any_where(|&b: &u8| b >= 1);
+    let max_mm_bps = max_mm_small as u16;
+
+    // Construct 4 bounded-symbolic markets. We use u8 for each numeric
+    // field so 4× fold stays inside CBMC's bitvector budget.
+    let mk = |long_oi_s: u8,
+              short_oi_s: u8,
+              curve_long_s: u8,
+              curve_short_s: u8,
+              price_s: u8|
+     -> MarketModel {
+        MarketModel {
+            long_oi: long_oi_s as u64,
+            short_oi: short_oi_s as u64,
+            curve_max_lp_loss_long: curve_long_s as u128,
+            curve_max_lp_loss_short: curve_short_s as u128,
+            price_smoothed: price_s as u128,
+        }
+    };
+
+    let m0 = mk(
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+    );
+    let m1 = mk(
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+    );
+    let m2 = mk(
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+    );
+    let m3 = mk(
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+    );
+
+    let markets = [m0, m1, m2, m3];
+
+    let recomputed = recompute_aggregate(&markets, max_mm_bps).expect("no overflow at u8 bounds");
+
+    // Independent fold of per-market terms — must equal the helper's own
+    // accumulator. This is the idempotence + decomposition property: the
+    // permissionless `recompute_aggregate` ix produces the same value as
+    // summing `worst_case_lp_loss` market-by-market with the same inputs.
+    let t0 = m0.worst_case_lp_loss(max_mm_bps, m0.price_smoothed);
+    let t1 = m1.worst_case_lp_loss(max_mm_bps, m1.price_smoothed);
+    let t2 = m2.worst_case_lp_loss(max_mm_bps, m2.price_smoothed);
+    let t3 = m3.worst_case_lp_loss(max_mm_bps, m3.price_smoothed);
+    let expected: u128 = t0 + t1 + t2 + t3;
+
+    assert_eq!(recomputed, expected);
 }
