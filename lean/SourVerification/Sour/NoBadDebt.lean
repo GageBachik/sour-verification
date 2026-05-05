@@ -302,4 +302,72 @@ theorem update_aggregate_preserves_bound
     Int.not_lt.mpr h_check_nonneg
   simp [h_not_lt]
 
+-- ---------------------------------------------------------------------------
+-- v0.6.0 — max_oi notional-micros cap theorems
+--
+-- On-chain surface (programs/sour/src/instructions/upsert_position.rs post-v0.6.0):
+--   side_oi       = max(new_long_oi, new_short_oi)         (qmax_storage units)
+--   side_notional = side_oi × mark / FIXED_ONE              (µUSDC)
+--   require!(side_notional <= max_oi_notional_micros, OverMaxOi);
+--
+-- Pure Nat — no Mathlib, no `sorry`. Mirrors the structure of
+-- `single_position_bound` (LP-scaled per-user cap).
+-- ---------------------------------------------------------------------------
+
+/-- Per-trade gross-side notional in µUSDC. Mirrors the on-chain helper at
+    `upsert_position.rs` (v0.6.0). `fixedOne` abstracts `1u128 << 32`. -/
+def sideNotional
+    (new_long_oi new_short_oi mark fixedOne : Nat) : Nat :=
+  let side := if new_long_oi ≥ new_short_oi then new_long_oi else new_short_oi
+  side * mark / fixedOne
+
+/-- The on-chain max_oi check: notional ≤ cap. -/
+def maxOiCheckPasses
+    (new_long_oi new_short_oi mark fixedOne max_oi_notional_micros : Nat) : Prop :=
+  sideNotional new_long_oi new_short_oi mark fixedOne ≤ max_oi_notional_micros
+
+/-- Bound theorem: if the cap check passes, the gross-side notional is
+    bounded by the cap. (Trivially true by definition — kept as an explicit
+    lemma so downstream proofs can rewrite it without unfolding.) -/
+theorem max_oi_bound
+    (new_long_oi new_short_oi mark fixedOne max_oi_notional_micros : Nat)
+    (h : maxOiCheckPasses new_long_oi new_short_oi mark fixedOne max_oi_notional_micros) :
+    sideNotional new_long_oi new_short_oi mark fixedOne ≤ max_oi_notional_micros := by
+  exact h
+
+/-- Monotonicity in the cap: tightening the cap from `c1` to `c2 ≤ c1` can
+    only reject more opens — every passing open under `c2` also passes
+    under `c1`. -/
+theorem max_oi_check_cap_monotone
+    (new_long_oi new_short_oi mark fixedOne c1 c2 : Nat)
+    (hcap : c2 ≤ c1)
+    (h : maxOiCheckPasses new_long_oi new_short_oi mark fixedOne c2) :
+    maxOiCheckPasses new_long_oi new_short_oi mark fixedOne c1 := by
+  unfold maxOiCheckPasses at *
+  exact Nat.le_trans h hcap
+
+/-- Cross-market price-agnostic invariant (concrete): two markets, same
+    dollar notional, different mark prices, same cap → both pass or both
+    fail identically. We pick a configuration where both opens land at
+    exactly $80 notional under a $100 cap and prove both pass.
+
+    BTC mark = $80,000 µUSDC = 80_000_000_000.  qmax_storage chosen so
+    notional = $80 = 80_000_000 µUSDC.
+    XRP mark = $1.40 µUSDC = 1_400_000.  qmax_storage chosen so notional
+    matches.
+
+    `qmax = 80_000_000 × FIXED_ONE / mark` exactly. -/
+theorem max_oi_dollar_parity_btc_vs_xrp :
+    let fixedOne     := 4294967296            -- 2^32
+    let btc_mark     := 80_000_000_000        -- $80,000
+    let xrp_mark     := 1_400_000             -- $1.40
+    let cap          := 100_000_000           -- $100
+    -- qmax_storage = 80_000_000 × fixedOne / mark
+    let btc_qmax     := 80_000_000 * fixedOne / btc_mark
+    let xrp_qmax     := 80_000_000 * fixedOne / xrp_mark
+    maxOiCheckPasses btc_qmax 0 btc_mark fixedOne cap
+      ∧ maxOiCheckPasses xrp_qmax 0 xrp_mark fixedOne cap := by
+  unfold maxOiCheckPasses sideNotional
+  native_decide
+
 end Sour
