@@ -269,3 +269,93 @@ fn proof_positive_close_pnl_debits_lp_exactly_when_fully_backed() {
         before.outstanding_winner_pnl - realized_pnl_old
     );
 }
+
+// ---------------------------------------------------------------------------
+// v0.5.1-P1c — aggregate-budget enforcement proofs
+//
+// Three invariants over the new `Protocol.aggregate_max_lp_loss` hot-path
+// counter, the per-market `Market::worst_case_lp_loss` exposure formula, and
+// the upsert-time enforcement check at `upsert_position.rs:648`:
+//
+//   I. Cap holds across a single upsert: if the precondition
+//      `aggregate_pre <= cap` and the on-chain check
+//      `proposed_aggregate <= cap` both hold, then `aggregate_post <= cap`
+//      after `update_aggregate(delta)`.
+//
+//   II. `recompute_aggregate` is byte-exact a sum of per-market
+//       `worst_case_lp_loss` terms (idempotence + no overflow under bounded
+//       inputs). N=4 markets — sized to fit CBMC's bitvector budget.
+//
+//   III. `update_aggregate` rejects rather than wraps when a negative
+//        delta would push the counter below 0 (the on-chain
+//        `AggregateBudgetUnderflow` Custom:43 path).
+//
+// Decidability strategy mirrors the v0.5.0 LP-scaled cap proof: u8/u16
+// inputs so symbolic products fit u32/u64 and CBMC terminates within the
+// 45s harness budget. Bound choices documented per harness.
+// ---------------------------------------------------------------------------
+
+use crate::aggregate::{aggregate_cap, ProtocolModel};
+
+/// Invariant I — cap holds under a single `update_aggregate(delta)`.
+///
+/// Models the upsert sequence:
+///   1. Snapshot `aggregate_pre = protocol.aggregate_max_lp_loss`.
+///   2. Compute `aggregate_cap` from current vault + budget knobs.
+///   3. Assume system entry invariant: `aggregate_pre <= cap`.
+///   4. Assume the on-chain `require!` at upsert_position.rs:648 passed
+///      (i.e., `proposed_aggregate >= 0 && proposed <= cap`).
+///   5. Apply `update_aggregate(delta)` (signed-add).
+///   6. Assert post-condition: `aggregate_post <= cap`.
+///
+/// CBMC budget: `total_assets` bounded to u8 (so `total_assets × 10_000`
+/// fits in u32), `aggregate_budget_bps` and `max_mm_bps` bounded to u8
+/// (1..=255). Same trick as `proof_per_user_cap_bounds_single_position_loss`.
+#[kani::proof]
+#[kani::unwind(2)]
+fn proof_aggregate_cap_invariant_holds_under_update() {
+    // Bounded knobs — keeps cap arithmetic decidable.
+    let total_assets_small: u8 = kani::any();
+    let agg_bps_small: u8 = kani::any_where(|&b: &u8| b >= 1);
+    let max_mm_small: u8 = kani::any_where(|&b: &u8| b >= 1);
+
+    let total_assets = total_assets_small as u64;
+    let aggregate_budget_bps = agg_bps_small as u16;
+    let max_mm_bps = max_mm_small as u16;
+
+    // Cap = total_assets × budget / max_mm. Under u8 inputs:
+    //   max cap = 255 × 255 / 1 = 65_025  (fits u32).
+    let cap = aggregate_cap(total_assets, aggregate_budget_bps, max_mm_bps);
+
+    // System-entry invariant: aggregate_pre satisfies the cap.
+    let aggregate_pre_small: u32 = kani::any();
+    let aggregate_pre = aggregate_pre_small as u128;
+    kani::assume(aggregate_pre <= cap);
+
+    let mut protocol = ProtocolModel {
+        aggregate_max_lp_loss: aggregate_pre,
+        aggregate_budget_bps,
+        max_mm_bps,
+    };
+
+    // Symbolic delta — bounded i32 so the i128 add is decidable. Covers
+    // both opens (positive delta) and closes/cascades (negative delta).
+    let delta_small: i32 = kani::any();
+    let delta = delta_small as i128;
+
+    // Mirror the on-chain require!: assume the upsert check passed.
+    let proposed_signed = (aggregate_pre as i128).wrapping_add(delta);
+    kani::assume(proposed_signed >= 0);
+    let proposed = proposed_signed as u128;
+    kani::assume(proposed <= cap);
+
+    // Apply the update. With the precondition above, both Overflow and
+    // Underflow paths are ruled out, so this must succeed.
+    let r = protocol.update_aggregate(delta);
+    assert!(r.is_ok());
+
+    // Post-condition: counter still respects the cap (cap depends only on
+    // total_assets / budget / max_mm, none of which the helper mutates,
+    // so cap_pre == cap_post within a single upsert).
+    assert!(protocol.aggregate_max_lp_loss <= cap);
+}

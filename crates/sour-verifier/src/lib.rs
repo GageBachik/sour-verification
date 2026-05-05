@@ -6,6 +6,7 @@
 //! across handlers.
 
 pub mod accounting;
+pub mod aggregate;
 pub mod exact;
 
 #[cfg(kani)]
