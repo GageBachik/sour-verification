@@ -1,5 +1,13 @@
 # Sour Verification Fix Implementation Spec
 
+> **Historical artifact** — captures the proof-driven security hardening shipped between v0.4.0u and v0.5.0. Published unedited so external readers can see the failing-test-first methodology that turned each unverified accounting path into a green Kani / Lean obligation. Internal absolute paths (`/Users/loser/projects/...`) and "next session" subagent split language are preserved verbatim — they document the actual workflow the project ran, not a polished retelling.
+
+> For the current proven-invariants surface, see `instruction-verification-targets.md`.
+>
+> For the public README + reproduce instructions, see the top-level `README.md`.
+
+---
+
 Date: 2026-05-03
 
 Repos:

@@ -35,7 +35,9 @@ run_harness proof_per_user_cap_bounds_single_position_loss
 run_harness proof_aggregate_cap_invariant_holds_under_update
 run_harness proof_recompute_matches_per_market_sum_n4
 run_harness proof_update_aggregate_no_underflow
+run_harness proof_max_oi_notional_cap_bound
+run_harness proof_max_oi_cross_market_dollar_parity
 
-echo "Skipped proof_fee_for_notional_never_exceeds_notional_under_100_percent: current direct Sour function boundary times out in CBMC; see docs/fix-implementation-spec.md."
+echo "Skipped proof_fee_for_notional_never_exceeds_notional_under_100_percent: current direct Sour function boundary times out in CBMC; see docs/historical-2026-05-03-fix-implementation-spec.md."
 
 exit "$status"
