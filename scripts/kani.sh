@@ -34,6 +34,7 @@ run_harness proof_positive_close_pnl_debits_lp_exactly_when_fully_backed
 run_harness proof_per_user_cap_bounds_single_position_loss
 run_harness proof_aggregate_cap_invariant_holds_under_update
 run_harness proof_recompute_matches_per_market_sum_n4
+run_harness proof_update_aggregate_no_underflow
 
 echo "Skipped proof_fee_for_notional_never_exceeds_notional_under_100_percent: current direct Sour function boundary times out in CBMC; see docs/fix-implementation-spec.md."
 

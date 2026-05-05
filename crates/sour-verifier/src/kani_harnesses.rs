@@ -295,7 +295,9 @@ fn proof_positive_close_pnl_debits_lp_exactly_when_fully_backed() {
 // 45s harness budget. Bound choices documented per harness.
 // ---------------------------------------------------------------------------
 
-use crate::aggregate::{aggregate_cap, recompute_aggregate, MarketModel, ProtocolModel};
+use crate::aggregate::{
+    aggregate_cap, recompute_aggregate, AggregateError, MarketModel, ProtocolModel,
+};
 
 /// Invariant I — cap holds under a single `update_aggregate(delta)`.
 ///
@@ -440,4 +442,41 @@ fn proof_recompute_matches_per_market_sum_n4() {
     let expected: u128 = t0 + t1 + t2 + t3;
 
     assert_eq!(recomputed, expected);
+}
+
+/// Invariant III — `update_aggregate` rejects rather than wraps when a
+/// negative delta would push the counter below 0.
+///
+/// Mirrors the on-chain `AggregateBudgetUnderflow` (Custom:43) path in
+/// `state.rs::Protocol::update_aggregate`. Defensive guard: cascade
+/// decrements should always be ≤ the matching open's increment by
+/// construction, but a drift bug must surface as Err rather than wrap.
+///
+/// CBMC budget: `aggregate_pre` and `delta` bounded to u32/i32 — same
+/// trick as the cap-invariant proof. The state-mutation no-op-on-Err
+/// claim is also verified.
+#[kani::proof]
+#[kani::unwind(2)]
+fn proof_update_aggregate_no_underflow() {
+    let aggregate_pre_small: u32 = kani::any();
+    let delta_small: i32 = kani::any();
+    let aggregate_pre = aggregate_pre_small as u128;
+    let delta = delta_small as i128;
+
+    let mut protocol = ProtocolModel {
+        aggregate_max_lp_loss: aggregate_pre,
+        aggregate_budget_bps: 10_000,
+        max_mm_bps: 100,
+    };
+    let before = protocol;
+
+    // Restrict to the underflow regime: prior + delta is representable in
+    // i128 (always true at our bounded sizes) but is negative.
+    let signed_sum = (aggregate_pre as i128) + delta;
+    kani::assume(signed_sum < 0);
+
+    let result = protocol.update_aggregate(delta);
+    assert_eq!(result, Err(AggregateError::Underflow));
+    // Counter must NOT have been mutated on the Err path.
+    assert_eq!(protocol, before);
 }
