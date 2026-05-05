@@ -8,6 +8,7 @@
 pub mod accounting;
 pub mod aggregate;
 pub mod exact;
+pub mod max_oi;
 
 #[cfg(kani)]
 mod kani_harnesses;
